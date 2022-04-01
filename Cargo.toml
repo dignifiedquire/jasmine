@@ -8,3 +8,13 @@ description = "Storing data like it's tea"
 repository = "https://github.com/dignifiedquire/jasmine"
 
 [dependencies]
+xxhash-rust = { version = "0.8.4", features = ["xxh3"] }
+
+[features]
+
+[dev-dependencies]
+criterion = "0.3.5"
+
+[[bench]]
+name = "partition"
+harness = false
