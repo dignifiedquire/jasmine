@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0/MIT"
 readme = "README.md"
+description = "Storing data like it's tea"
+repository = "https://github.com/dignifiedquire/jasmine"
 
 [dependencies]
