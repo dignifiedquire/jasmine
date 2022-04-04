@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, time::Instant};
 
 use criterion::{
     async_executor::AsyncExecutor, black_box, criterion_group, criterion_main, BenchmarkId,
@@ -24,7 +24,7 @@ impl<'a> AsyncExecutor for &'a GlommioExecutor {
     }
 }
 
-pub fn criterion_benchmark(c: &mut Criterion) {
+pub fn put_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("vlog_put");
     let value_size = 1024;
     for key_size in [32, 64, 128].iter() {
@@ -55,5 +55,55 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+pub fn get_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vlog_get");
+    let value_size = 1024;
+    for key_size in [32, 64, 128].iter() {
+        let key = vec![4u8; *key_size];
+
+        group.throughput(criterion::Throughput::Bytes(
+            (*key_size + value_size) as u64,
+        ));
+        group.bench_with_input(
+            BenchmarkId::new("key_size", *key_size as u64),
+            &key,
+            |b, key| {
+                let file = tempfile::NamedTempFile::new().unwrap();
+                let executor = GlommioExecutor::default();
+                let vlog = executor.run(async { VLog::create(file.path()).await.unwrap() });
+                let vlog = RefCell::new(vlog);
+                let vlog_ref = &vlog;
+                let offsets = executor.run(async {
+                    let mut offsets = Vec::new();
+                    let vlog = &mut *vlog.borrow_mut();
+                    for i in 0..1000 {
+                        let value = vec![((8 * i) % 255) as u8; value_size];
+                        offsets.push(vlog.put(key, &value).await.unwrap());
+                    }
+                    vlog.flush().await.unwrap();
+                    offsets
+                });
+
+                let offsets_ref = &offsets[..];
+                b.to_async(&executor).iter_custom(|iters| async move {
+                    let l = offsets_ref.len();
+
+                    let start = Instant::now();
+                    for i in 0..iters {
+                        let vlog = &mut *vlog_ref.borrow_mut();
+
+                        let offset = offsets_ref[(i as usize) % l];
+                        let res = vlog.get(offset).await.unwrap().unwrap();
+                        black_box(res);
+                    }
+                    start.elapsed()
+                });
+                executor.run(async move { vlog.into_inner().close().await.unwrap() });
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, put_benchmark, get_benchmark);
 criterion_main!(benches);

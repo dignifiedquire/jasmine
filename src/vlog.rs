@@ -141,7 +141,6 @@ impl VLog {
         let (header, rest) = LayoutVerified::<_, LogLineHeader>::new_from_prefix(&data[..])
             .ok_or_else(|| eyre::eyre!("invalid log line header"))?;
 
-        dbg!(&header);
         let (key, value) = if header.body_size() as usize <= rest.len() {
             // fast path, already read all we need
 
@@ -208,7 +207,6 @@ impl VLog {
         // align total read size appropriately (upwards)
         let aligned_read_len = self.reader.align_up(read_len);
 
-        println!("wanting to read {offset} {min_len}, actual {aligned_offset} {aligned_read_len}");
         let buffer = self
             .reader
             .read_at_aligned(aligned_offset, usize::try_from(aligned_read_len)?)
@@ -217,9 +215,8 @@ impl VLog {
 
         // remove alignment offset at the beginning
         let rest_len = buffer.len() - offset_diff as usize;
-        let buffer =
-            ReadResult::slice(&buffer, usize::try_from(dbg!(offset_diff))?, dbg!(rest_len))
-                .expect("already validated");
+        let buffer = ReadResult::slice(&buffer, usize::try_from(offset_diff)?, rest_len)
+            .expect("already validated");
 
         Ok(buffer)
     }
