@@ -27,7 +27,9 @@ jobs:
     name: Test Suite
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
+        # Only linux is supported atm
+        #, macos-latest, windows-latest]
         rust:
           - stable
           - 1.59.0
@@ -39,9 +41,15 @@ jobs:
           profile: minimal
           toolchain: ${{ matrix.rust }}
           override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
+
+      - name: Run tests
+        run: |
+          cat << EOF > "run-gha-workflow.sh"
+          PATH=$PATH:/usr/share/rust/.cargo/bin
+          echo "`nproc` CPU(s) available"
+          cargo +${{ matrix.rust }} test -- --test-threads=`nproc`
+          EOF
+          sudo -E bash -c "ulimit -Sl 512 && ulimit -Hl 512 && bash run-gha-workflow.sh"
 
   fmt:
     name: Rustfmt
