@@ -8,13 +8,22 @@ description = "Storing data like it's tea"
 repository = "https://github.com/dignifiedquire/jasmine"
 
 [dependencies]
+eyre = "0.6.7"
+futures-lite = "1.12.0"
+glommio = "0.7.0"
 xxhash-rust = { version = "0.8.4", features = ["xxh3"] }
+zerocopy = "0.6.1"
 
 [features]
 
 [dev-dependencies]
-criterion = "0.3.5"
+criterion = { version = "0.3.5", features = ["async"] }
+tempfile = "3.3.0"
 
 [[bench]]
 name = "partition"
+harness = false
+
+[[bench]]
+name = "vlog"
 harness = false
