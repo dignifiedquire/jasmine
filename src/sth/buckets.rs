@@ -34,7 +34,7 @@ impl<V: Default, const N: u8> Buckets<V, N> {
         Ok(value)
     }
 
-    const fn max_size() -> usize {
+    fn max_size() -> usize {
         (1 << N) - 1
     }
 }
