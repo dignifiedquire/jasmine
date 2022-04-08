@@ -5,7 +5,10 @@ use criterion::{
     Criterion,
 };
 use glommio::LocalExecutor;
-use jasmine::vlog::VLog;
+use jasmine::{
+    lsm::LogStorage,
+    vlog::{VLog, VLogConfig},
+};
 
 #[derive(Debug, Default)]
 struct GlommioExecutor {
@@ -40,7 +43,8 @@ pub fn put_benchmark(c: &mut Criterion) {
             |b, (key, value)| {
                 let file = tempfile::NamedTempFile::new().unwrap();
                 let executor = GlommioExecutor::default();
-                let vlog = executor.run(async { VLog::create(file.path()).await.unwrap() });
+                let vlog = executor
+                    .run(async { VLog::create(VLogConfig::new(file.path())).await.unwrap() });
                 let vlog = RefCell::new(vlog);
                 let vlog_ref = &vlog;
                 b.to_async(&executor).iter(|| async move {
@@ -70,7 +74,8 @@ pub fn get_benchmark(c: &mut Criterion) {
             |b, key| {
                 let file = tempfile::NamedTempFile::new().unwrap();
                 let executor = GlommioExecutor::default();
-                let vlog = executor.run(async { VLog::create(file.path()).await.unwrap() });
+                let vlog = executor
+                    .run(async { VLog::create(VLogConfig::new(file.path())).await.unwrap() });
                 let vlog = RefCell::new(vlog);
                 let vlog_ref = &vlog;
                 let offsets = executor.run(async {
@@ -93,7 +98,7 @@ pub fn get_benchmark(c: &mut Criterion) {
                         let vlog = &mut *vlog_ref.borrow_mut();
 
                         let offset = offsets_ref[(i as usize) % l];
-                        let res = vlog.get(offset).await.unwrap().unwrap();
+                        let res = vlog.get(&offset).await.unwrap().unwrap();
                         black_box(res);
                     }
                     start.elapsed()

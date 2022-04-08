@@ -8,6 +8,7 @@ description = "Storing data like it's tea"
 repository = "https://github.com/dignifiedquire/jasmine"
 
 [dependencies]
+async-trait = "0.1.53"
 eyre = "0.6.7"
 futures-lite = "1.12.0"
 glommio = "0.7.0"

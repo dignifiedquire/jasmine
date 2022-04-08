@@ -1,11 +1,14 @@
 //! vLog, value log.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use async_trait::async_trait;
 use eyre::Result;
 use futures_lite::AsyncWriteExt;
 use glommio::io::{DmaFile, DmaStreamWriter, DmaStreamWriterBuilder, OpenOptions, ReadResult};
 use zerocopy::{AsBytes, FromBytes, LayoutVerified, LittleEndian, Unaligned, U16, U32};
+
+use crate::lsm::LogStorage;
 
 const VLOG_VERSION: u16 = 0;
 
@@ -38,16 +41,35 @@ impl VLogHeader {
     }
 }
 
-impl VLog {
+#[derive(Debug, Clone)]
+pub struct VLogConfig {
+    pub path: PathBuf,
+}
+
+impl VLogConfig {
+    pub fn new<P: AsRef<Path>>(path: P) -> Self {
+        VLogConfig {
+            path: path.as_ref().into(),
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl LogStorage for VLog {
+    type Config = VLogConfig;
+    type Key = ReadResult;
+    type Value = ReadResult;
+    type Offset = u64;
+
     /// Creates a new, empty `VLog` at the provided `path`.
-    pub async fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let writer_file = DmaFile::create(path.as_ref())
+    async fn create(config: Self::Config) -> Result<Self> {
+        let writer_file = DmaFile::create(&config.path)
             .await
             .map_err(|err| eyre::eyre!("failed create file: {:?}", err))?;
         let mut writer = DmaStreamWriterBuilder::new(writer_file).build();
         let reader = OpenOptions::new()
             .read(true)
-            .dma_open(path)
+            .dma_open(&config.path)
             .await
             .map_err(|err| eyre::eyre!("failed top open file: {:?}", err))?;
         let header = VLogHeader::default();
@@ -63,10 +85,10 @@ impl VLog {
     }
 
     /// Open an existing `VLog` at the provided `path`.
-    pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+    async fn open(config: Self::Config) -> Result<Self> {
         let reader = OpenOptions::new()
             .read(true)
-            .dma_open(path.as_ref())
+            .dma_open(&config.path)
             .await
             .map_err(|err| eyre::eyre!("failed top open file: {:?}", err))?;
 
@@ -88,7 +110,7 @@ impl VLog {
             .read(true)
             .write(true)
             .append(true)
-            .dma_open(path.as_ref())
+            .dma_open(&config.path)
             .await
             .map_err(|err| eyre::eyre!("failed top open file: {:?}", err))?;
         let writer = DmaStreamWriterBuilder::new(writer).build();
@@ -103,7 +125,7 @@ impl VLog {
 
     /// Waits for all underlying data to be flushed and cleanly closes the underlyling
     /// file descriptors. Must be always called, as there is no `Drop` guard.
-    pub async fn close(mut self) -> Result<()> {
+    async fn close(mut self) -> Result<()> {
         self.writer.close().await?;
         self.reader
             .close()
@@ -112,7 +134,11 @@ impl VLog {
         Ok(())
     }
 
-    pub async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<u64> {
+    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<Self::Offset> {
         let key = key.as_ref();
         let value = value.as_ref();
 
@@ -132,10 +158,10 @@ impl VLog {
         Ok(old_write_head)
     }
 
-    pub async fn get<'a>(&mut self, offset: u64) -> Result<Option<(ReadResult, ReadResult)>> {
+    async fn get(&mut self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>> {
         // read at least the header
         let header_size = LogLineHeader::size();
-        let data = self.read_at_least(offset, header_size).await?;
+        let data = self.read_at_least(*offset, header_size).await?;
 
         // parse the header
         let (header, rest) = LayoutVerified::<_, LogLineHeader>::new_from_prefix(&data[..])
@@ -160,7 +186,7 @@ impl VLog {
 
             let data = self
                 .read_at_least(
-                    offset as u64 + header_size as u64 + header.key_size() as u64,
+                    *offset as u64 + header_size as u64 + header.key_size() as u64,
                     header.value_size() as usize,
                 )
                 .await?;
@@ -171,7 +197,7 @@ impl VLog {
             // not enough for anything, read both key and value
             let data = self
                 .read_at_least(
-                    offset as u64 + header_size as u64,
+                    *offset as u64 + header_size as u64,
                     header.body_size() as usize,
                 )
                 .await?;
@@ -192,11 +218,13 @@ impl VLog {
         Ok(Some((key, value)))
     }
 
-    pub async fn flush(&mut self) -> Result<()> {
+    async fn flush(&mut self) -> Result<()> {
         self.writer.flush().await?;
         Ok(())
     }
+}
 
+impl VLog {
     /// Reads at the given offset, at least `min_len`, will read more than that, returning the full result+
     /// from the read amplification through read alignment.
     async fn read_at_least<'a>(&mut self, offset: u64, min_len: usize) -> Result<ReadResult> {
@@ -270,7 +298,7 @@ mod tests {
                 // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(file.path()).await?;
+                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -285,7 +313,7 @@ mod tests {
 
                 for (i, offset) in offsets.iter().enumerate() {
                     println!("reading {i}: at {offset}");
-                    let (key, value) = vlog.get(*offset).await?.unwrap();
+                    let (key, value) = vlog.get(offset).await?.unwrap();
                     assert_eq!(&key[..], &i.to_le_bytes()[..]);
                     assert_eq!(
                         std::str::from_utf8(&value).unwrap(),
@@ -309,7 +337,7 @@ mod tests {
                 // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(file.path()).await?;
+                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -326,7 +354,7 @@ mod tests {
                 for (i, offset) in offsets.iter().enumerate() {
                     let i = i as u64;
                     println!("reading {i}: at {offset}");
-                    let (key, value) = vlog.get(*offset).await?.unwrap();
+                    let (key, value) = vlog.get(offset).await?.unwrap();
                     assert_eq!(&key[..], &i.to_le_bytes()[..]);
                     let original_value = (0u64..500)
                         .flat_map(|k| (k * i).to_le_bytes())
@@ -351,7 +379,7 @@ mod tests {
                 // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(file.path()).await?;
+                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -363,11 +391,11 @@ mod tests {
 
                 vlog.close().await?;
 
-                let mut vlog = VLog::open(file.path()).await?;
+                let mut vlog = VLog::open(VLogConfig::new(file.path())).await?;
 
                 for (i, offset) in offsets.iter().enumerate() {
                     println!("reading {i}: at {offset}");
-                    let (key, value) = vlog.get(*offset).await?.unwrap();
+                    let (key, value) = vlog.get(offset).await?.unwrap();
                     assert_eq!(&key[..], &i.to_le_bytes()[..]);
                     assert_eq!(
                         std::str::from_utf8(&value).unwrap(),
