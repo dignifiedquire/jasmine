@@ -61,19 +61,18 @@ where
             // As it's the first key a single byte is enough as it doesn't need to be distinguised
             // from other keys.
             let trimmed_index_key = &index_key[..1];
-            records.push(trimmed_index_key, value);
+            records.insert(trimmed_index_key.to_vec(), value);
         } else {
-            // Read the record list from disk and insert the new key
-            let (pos, prev_record) = records.find_key_position(index_key);
+            let (prev_record, next_record) = records.find_key_position(index_key);
 
             match prev_record {
                 // The previous key is fully contained in the current key. We need to read the full
                 // key from the main data file in order to retrieve a key that is distinguishable
                 // from the one that should get inserted.
-                Some(prev_record) if index_key.starts_with(&prev_record.key) => {
+                Some((prev_key_short, prev_record)) if index_key.starts_with(prev_key_short) => {
                     let full_prev_key = self
                         .values
-                        .get_key(&prev_record.value)
+                        .get_key(&prev_record)
                         .await?
                         .ok_or_else(|| eyre::eyre!("missing full key for key: {:?}", key))?;
 
@@ -90,25 +89,13 @@ where
                     let trimmed_prev_key = &prev_key[..=key_trim_pos];
                     let trimmed_index_key = &index_key[..=key_trim_pos];
 
-                    // Replace the existing previous key (which is too short) with a new one and
-                    // also insert the new key.
-                    let keys = if trimmed_prev_key < trimmed_index_key {
-                        // TODO: find a clean way to avoid this clone
-                        [
-                            (trimmed_prev_key, prev_record.value.clone(), pos - 1),
-                            (trimmed_index_key, value, pos),
-                        ]
-                    } else {
-                        [
-                            (trimmed_index_key, value, pos - 1),
-                            (trimmed_prev_key, prev_record.value.clone(), pos),
-                        ]
-                    };
-                    records.insert_many(&keys[..]);
+                    let prev_key_short = prev_key_short.to_vec();
 
-                    // There is no need to do anything with the next key as the next key is
-                    // already guaranteed to be distinguishable from the new key as it was already
-                    // distinguishable from the previous key.
+                    // remove previous key
+                    let (_, prev_value) = records.take(prev_key_short).expect("already checked");
+                    // insert
+                    records.insert(trimmed_prev_key.to_vec(), prev_value);
+                    records.insert(trimmed_index_key.to_vec(), value);
                 }
                 // The previous key is not fully contained in the key that should get inserted.
                 // Hence we only need to trim the new key to the smallest one possible that is
@@ -116,18 +103,18 @@ where
                 // (in case there is one).
                 _ => {
                     let prev_record_non_common_byte_pos = match prev_record {
-                        Some(record) => first_non_common_byte(index_key, &record.key),
+                        Some((record_key, record)) => first_non_common_byte(index_key, record_key),
                         None => 0,
                     };
 
                     // The new record won't be the last record
-                    let next_record_non_common_byte_pos = if pos < records.len() {
-                        // In order to determine the minimal key size, we need to get the next key as well.
-                        let next_record = records.get(pos).expect("missing record");
-                        first_non_common_byte(index_key, &next_record.key)
-                    } else {
-                        0
-                    };
+                    let next_record_non_common_byte_pos =
+                        if let Some((next_record_key, _)) = next_record {
+                            // In order to determine the minimal key size, we need to get the next key as well.
+                            first_non_common_byte(index_key, &next_record_key)
+                        } else {
+                            0
+                        };
 
                     // Minimum prefix of the key that is different in at least one byte from the
                     // previous as well as the next key.
@@ -140,7 +127,7 @@ where
                     let key_trim_pos = cmp::min(min_prefix, index_key.len());
 
                     let trimmed_index_key = &index_key[0..=key_trim_pos];
-                    records.insert(trimmed_index_key, value, pos);
+                    records.insert(trimmed_index_key.to_vec(), value);
                 }
             }
         }
