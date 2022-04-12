@@ -23,7 +23,22 @@ impl<V> RecordList<V> {
     }
 
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Option<&V> {
-        self.records.get(key.as_ref())
+        let key = key.as_ref();
+        // Several prefixes can match a `key`, we are only interested in the last one that
+        // matches, hence keep a match around until we can be sure it's the last one.
+        let mut might_match = None;
+        for (record_key, record) in &self.records {
+            // The stored prefix of the key needs to match the requested key.
+            if key.starts_with(record_key) {
+                might_match = Some(record);
+            } else if &record_key[..] > key {
+                // No keys from here on can possibly match, hence stop iterating. If we had a prefix
+                // match, return that, else return none.
+
+                break;
+            }
+        }
+        might_match
     }
 
     pub fn take<K: AsRef<[u8]>>(&mut self, key: K) -> Option<(Vec<u8>, V)> {

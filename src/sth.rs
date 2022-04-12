@@ -12,6 +12,7 @@ mod recordlist;
 use self::index::Index;
 use crate::lsm::{KeyValueStorage, LogStorage};
 
+#[derive(Debug)]
 pub struct StoreTheHash<V, L, const N: u8>
 where
     L: LogStorage<Offset = V>,
@@ -95,8 +96,8 @@ mod tests {
                 let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
                 let mut sth =
                     StoreTheHash::<_, _, BUCKET_BITS>::create(Config::new(vlog.clone())).await?;
-
-                for i in 0u64..100 {
+                const NUM_ENTRIES: u64 = 5;
+                for i in 0..NUM_ENTRIES {
                     let key = i.to_le_bytes();
                     let offset = vlog
                         .put(&key, format!("hello world: {i}").as_bytes())
@@ -107,7 +108,7 @@ mod tests {
                 // wait for all things to be actually written
                 vlog.flush().await?;
 
-                for i in 0u64..100 {
+                for i in 0..NUM_ENTRIES {
                     println!("{i}");
                     let offset = sth.get(i.to_le_bytes()).await?.unwrap();
                     println!("reading {i}: at {offset}");
