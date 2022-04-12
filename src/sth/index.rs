@@ -103,7 +103,7 @@ where
                 // (in case there is one).
                 _ => {
                     let prev_record_non_common_byte_pos = match prev_record {
-                        Some((record_key, record)) => first_non_common_byte(index_key, record_key),
+                        Some((record_key, _)) => first_non_common_byte(index_key, record_key),
                         None => 0,
                     };
 
@@ -131,6 +131,32 @@ where
                 }
             }
         }
+
+        Ok(())
+    }
+
+    pub fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<&V>> {
+        let key = key.as_ref();
+        ensure!(key.len() >= 4, "Key must be at least 4 bytes long");
+
+        // Determine which bucket a key falls into. Use the first few bytes of they key for it and
+        // interpret them as a little-endian integer.
+        let prefix_bytes: [u8; 4] = key[0..4].try_into().unwrap();
+        let prefix = u32::from_le_bytes(prefix_bytes);
+        let leading_bits = (1 << N) - 1;
+        let bucket: u32 = prefix & leading_bits;
+
+        // Get the index file offset of the record list the key is in.
+        let records = self.buckets.get(bucket as usize)?;
+        // The key doesn't need the prefix that was used to find the right bucket. For simplicty
+        // only full bytes are trimmed off.
+        let index_key = strip_bucket_prefix(&key, N);
+
+        Ok(records.get(index_key))
+    }
+
+    pub async fn close(self) -> Result<()> {
+        self.values.close().await?;
 
         Ok(())
     }

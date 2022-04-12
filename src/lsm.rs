@@ -19,8 +19,8 @@ pub trait KeyValueStorage: Sized {
     async fn open(config: Self::Config) -> Result<Self>;
     async fn close(self) -> Result<()>;
 
-    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, data: V) -> Result<()>;
-    async fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<Self::Value>>;
+    async fn put<K: AsRef<[u8]>>(&mut self, key: K, data: Self::Value) -> Result<()>;
+    async fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<&Self::Value>>;
     async fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()>;
     async fn has<K: AsRef<[u8]>>(&mut self, key: K) -> Result<bool>;
 }

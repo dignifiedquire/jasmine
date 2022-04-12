@@ -1,6 +1,10 @@
 //! vLog, value log.
 
-use std::path::{Path, PathBuf};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use async_trait::async_trait;
 use eyre::Result;
@@ -12,8 +16,11 @@ use crate::lsm::LogStorage;
 
 const VLOG_VERSION: u16 = 0;
 
+#[derive(Debug, Clone)]
+pub struct VLog(Rc<RefCell<Inner>>);
+
 #[derive(Debug)]
-pub struct VLog {
+struct Inner {
     #[allow(dead_code)]
     header: VLogHeader,
     write_head: u64,
@@ -76,12 +83,12 @@ impl LogStorage for VLog {
         writer.write_all(header.as_bytes()).await?;
         let write_head = VLogHeader::size() as u64;
 
-        Ok(VLog {
+        Ok(VLog(Rc::new(RefCell::new(Inner {
             header,
             writer,
             reader,
             write_head,
-        })
+        }))))
     }
 
     /// Open an existing `VLog` at the provided `path`.
@@ -115,22 +122,26 @@ impl LogStorage for VLog {
             .map_err(|err| eyre::eyre!("failed top open file: {:?}", err))?;
         let writer = DmaStreamWriterBuilder::new(writer).build();
 
-        Ok(VLog {
+        Ok(VLog(Rc::new(RefCell::new(Inner {
             header: *header,
             reader,
             writer,
             write_head,
-        })
+        }))))
     }
 
     /// Waits for all underlying data to be flushed and cleanly closes the underlyling
     /// file descriptors. Must be always called, as there is no `Drop` guard.
     async fn close(mut self) -> Result<()> {
-        self.writer.close().await?;
-        self.reader
-            .close()
-            .await
-            .map_err(|err| eyre::eyre!("failed to close reader: {:?}", err))?;
+        if let Ok(inner) = Rc::try_unwrap(self.0) {
+            let mut inner = inner.into_inner();
+            inner.writer.close().await?;
+            inner
+                .reader
+                .close()
+                .await
+                .map_err(|err| eyre::eyre!("failed to close reader: {:?}", err))?;
+        }
         Ok(())
     }
 
@@ -147,13 +158,18 @@ impl LogStorage for VLog {
         let header = LogLineHeader::new(key_size, value_size);
 
         // write header
-        self.writer.write_all(header.as_bytes()).await?;
+        self.0
+            .borrow_mut()
+            .writer
+            .write_all(header.as_bytes())
+            .await?;
         // write key & value
-        self.writer.write_all(key).await?;
-        self.writer.write_all(value).await?;
+        self.0.borrow_mut().writer.write_all(key).await?;
+        self.0.borrow_mut().writer.write_all(value).await?;
 
-        let old_write_head = self.write_head;
-        self.write_head += LogLineHeader::size() as u64 + key_size as u64 + value_size as u64;
+        let old_write_head = self.0.borrow().write_head;
+        self.0.borrow_mut().write_head +=
+            LogLineHeader::size() as u64 + key_size as u64 + value_size as u64;
 
         Ok(old_write_head)
     }
@@ -219,7 +235,7 @@ impl LogStorage for VLog {
     }
 
     async fn flush(&mut self) -> Result<()> {
-        self.writer.flush().await?;
+        self.0.borrow_mut().writer.flush().await?;
         Ok(())
     }
 }
@@ -229,13 +245,15 @@ impl VLog {
     /// from the read amplification through read alignment.
     async fn read_at_least<'a>(&mut self, offset: u64, min_len: usize) -> Result<ReadResult> {
         // align offset appropriately (downwards)
-        let aligned_offset = self.reader.align_down(offset);
+        let aligned_offset = self.0.borrow().reader.align_down(offset);
         let offset_diff = offset - aligned_offset;
         let read_len = offset_diff + min_len as u64;
         // align total read size appropriately (upwards)
-        let aligned_read_len = self.reader.align_up(read_len);
+        let aligned_read_len = self.0.borrow().reader.align_up(read_len);
 
         let buffer = self
+            .0
+            .borrow()
             .reader
             .read_at_aligned(aligned_offset, usize::try_from(aligned_read_len)?)
             .await
@@ -295,7 +313,6 @@ mod tests {
         use glommio::LocalExecutorBuilder;
         LocalExecutorBuilder::default()
             .spawn(|| async move {
-                // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
                 let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
@@ -334,7 +351,6 @@ mod tests {
         use glommio::LocalExecutorBuilder;
         LocalExecutorBuilder::default()
             .spawn(|| async move {
-                // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
                 let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
@@ -376,7 +392,6 @@ mod tests {
         use glommio::LocalExecutorBuilder;
         LocalExecutorBuilder::default()
             .spawn(|| async move {
-                // your code here
                 let file = tempfile::NamedTempFile::new().unwrap();
 
                 let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;

@@ -31,7 +31,10 @@ impl<V> RecordList<V> {
     }
 
     /// Returns the next and previous record for this key.
-    pub fn find_key_position<K: AsRef<[u8]>>(&self, key: K) -> (Option<(&[u8], &V)>, Option<(&[u8], &V)>) {
+    pub fn find_key_position<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+    ) -> (Option<(&[u8], &V)>, Option<(&[u8], &V)>) {
         let mut prev_record = None;
         let key = key.as_ref();
         for (record_key, record) in &self.records {
