@@ -62,19 +62,19 @@ where
         Ok(())
     }
 
-    async fn put<K: AsRef<[u8]>>(&mut self, key: K, value: Self::Value) -> Result<()> {
+    async fn put<K: AsRef<[u8]>>(&self, key: K, value: Self::Value) -> Result<()> {
         self.index.put(key, value).await
     }
 
-    async fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<&Self::Value>> {
+    async fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Self::Value>> {
         self.index.get(key)
     }
 
-    async fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()> {
+    async fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<()> {
         todo!()
     }
 
-    async fn has<K: AsRef<[u8]>>(&mut self, key: K) -> Result<bool> {
+    async fn has<K: AsRef<[u8]>>(&self, key: K) -> Result<bool> {
         todo!()
     }
 }
@@ -93,10 +93,10 @@ mod tests {
         LocalExecutorBuilder::default()
             .spawn(|| async move {
                 let file = tempfile::NamedTempFile::new().unwrap();
-                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
-                let mut sth =
+                let vlog = VLog::create(VLogConfig::new(file.path())).await?;
+                let sth =
                     StoreTheHash::<_, _, BUCKET_BITS>::create(Config::new(vlog.clone())).await?;
-                const NUM_ENTRIES: u64 = 5;
+                const NUM_ENTRIES: u64 = 100;
                 for i in 0..NUM_ENTRIES {
                     let key = i.to_le_bytes();
                     let offset = vlog
@@ -112,7 +112,7 @@ mod tests {
                     println!("{i}");
                     let offset = sth.get(i.to_le_bytes()).await?.unwrap();
                     println!("reading {i}: at {offset}");
-                    let (key, value) = vlog.get(offset).await?.unwrap();
+                    let (key, value) = vlog.get(&offset).await?.unwrap();
                     assert_eq!(&key[..], &i.to_le_bytes()[..]);
                     assert_eq!(
                         std::str::from_utf8(&value).unwrap(),

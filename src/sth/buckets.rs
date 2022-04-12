@@ -20,9 +20,9 @@ impl<V: Default, const N: u8> Buckets<V, N> {
         Ok(())
     }
 
-    pub fn get(&mut self, bucket: usize) -> Result<&V> {
+    pub fn get(&self, bucket: usize) -> Result<Option<&V>> {
         ensure!(bucket <= Self::max_size(), "out of bounds");
-        let value = self.0.entry(bucket).or_insert_with(Default::default);
+        let value = self.0.get(&bucket);
 
         Ok(value)
     }
@@ -58,7 +58,7 @@ mod tests {
         const BUCKETS_BITS: u8 = 3;
         let mut buckets = Buckets::<u64, BUCKETS_BITS>::default();
         buckets.put(3, 54321).unwrap();
-        assert!(matches!(buckets.get(3), Ok(54321)));
+        assert!(matches!(buckets.get(3), Ok(Some(54321))));
     }
 
     #[test]
@@ -74,17 +74,17 @@ mod tests {
         const BUCKETS_BITS: u8 = 3;
         let mut buckets = Buckets::<u64, BUCKETS_BITS>::default();
         let result_empty = buckets.get(3);
-        assert!(matches!(result_empty, Ok(0)));
+        assert!(matches!(result_empty, Ok(None)));
 
         buckets.put(3, 54321).unwrap();
         let result = buckets.get(3);
-        assert!(matches!(result, Ok(54321)));
+        assert!(matches!(result, Ok(Some(54321))));
     }
 
     #[test]
     fn get_error() {
         const BUCKETS_BITS: u8 = 3;
-        let mut buckets = Buckets::<u64, BUCKETS_BITS>::default();
+        let buckets = Buckets::<u64, BUCKETS_BITS>::default();
         let error = buckets.get(333);
         assert!(error.is_err());
     }

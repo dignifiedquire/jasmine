@@ -19,10 +19,10 @@ pub trait KeyValueStorage: Sized {
     async fn open(config: Self::Config) -> Result<Self>;
     async fn close(self) -> Result<()>;
 
-    async fn put<K: AsRef<[u8]>>(&mut self, key: K, data: Self::Value) -> Result<()>;
-    async fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<&Self::Value>>;
-    async fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()>;
-    async fn has<K: AsRef<[u8]>>(&mut self, key: K) -> Result<bool>;
+    async fn put<K: AsRef<[u8]>>(&self, key: K, data: Self::Value) -> Result<()>;
+    async fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Self::Value>>;
+    async fn delete<K: AsRef<[u8]>>(&self, key: K) -> Result<()>;
+    async fn has<K: AsRef<[u8]>>(&self, key: K) -> Result<bool>;
 }
 
 #[async_trait(?Send)]
@@ -36,20 +36,16 @@ pub trait LogStorage: Sized {
     async fn open(config: Self::Config) -> Result<Self>;
     async fn close(self) -> Result<()>;
 
-    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
-        &mut self,
-        key: K,
-        data: V,
-    ) -> Result<Self::Offset>;
-    async fn get(&mut self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>>;
-    async fn get_key(&mut self, offset: &Self::Offset) -> Result<Option<Self::Key>> {
+    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, data: V) -> Result<Self::Offset>;
+    async fn get(&self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>>;
+    async fn get_key(&self, offset: &Self::Offset) -> Result<Option<Self::Key>> {
         Ok(self.get(offset).await?.map(|(key, _)| key))
     }
-    async fn get_value(&mut self, offset: &Self::Offset) -> Result<Option<Self::Value>> {
+    async fn get_value(&self, offset: &Self::Offset) -> Result<Option<Self::Value>> {
         Ok(self.get(offset).await?.map(|(_, value)| value))
     }
 
-    async fn flush(&mut self) -> Result<()> {
+    async fn flush(&self) -> Result<()> {
         Ok(())
     }
 }

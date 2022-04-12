@@ -1,4 +1,4 @@
-use std::cmp;
+use std::{cell::RefCell, cmp};
 
 use eyre::{ensure, Result};
 
@@ -23,7 +23,7 @@ pub struct Index<V, L, const N: u8>
 where
     L: LogStorage<Offset = V>,
 {
-    buckets: Buckets<RecordList<V>, N>,
+    buckets: RefCell<Buckets<RecordList<V>, N>>,
     values: L,
 }
 impl<V, L, const N: u8> Index<V, L, N>
@@ -33,12 +33,12 @@ where
 {
     pub fn new(values: L) -> Result<Self> {
         Ok(Self {
-            buckets: Buckets::<_, N>::default(),
+            buckets: RefCell::new(Buckets::<_, N>::default()),
             values,
         })
     }
 
-    pub async fn put<K: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
+    pub async fn put<K: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
         let key = key.as_ref();
         ensure!(key.len() >= 4, "key must be at least 4 bytes");
 
@@ -50,7 +50,8 @@ where
         let bucket: u32 = prefix & leading_bits;
 
         // Get the index file offset of the record list the key is in.
-        let records = self.buckets.get_mut(bucket as usize)?;
+        let mut buckets = self.buckets.borrow_mut();
+        let records = buckets.get_mut(bucket as usize)?;
 
         // The key doesn't need the prefix that was used to find the right bucket. For simplicty
         // only full bytes are trimmed off.
@@ -135,7 +136,7 @@ where
         Ok(())
     }
 
-    pub fn get<K: AsRef<[u8]>>(&mut self, key: K) -> Result<Option<&V>> {
+    pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<V>> {
         let key = key.as_ref();
         ensure!(key.len() >= 4, "Key must be at least 4 bytes long");
 
@@ -147,12 +148,13 @@ where
         let bucket: u32 = prefix & leading_bits;
 
         // Get the index file offset of the record list the key is in.
-        let records = self.buckets.get(bucket as usize)?;
+        let buckets = self.buckets.borrow();
+        let records = buckets.get(bucket as usize)?;
         // The key doesn't need the prefix that was used to find the right bucket. For simplicty
         // only full bytes are trimmed off.
         let index_key = strip_bucket_prefix(&key, N);
 
-        Ok(records.get(index_key))
+        Ok(records.and_then(|r| r.get(index_key)).cloned())
     }
 
     pub async fn close(self) -> Result<()> {

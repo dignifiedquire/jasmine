@@ -145,11 +145,7 @@ impl LogStorage for VLog {
         Ok(())
     }
 
-    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> Result<Self::Offset> {
+    async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<Self::Offset> {
         let key = key.as_ref();
         let value = value.as_ref();
 
@@ -174,7 +170,7 @@ impl LogStorage for VLog {
         Ok(old_write_head)
     }
 
-    async fn get(&mut self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>> {
+    async fn get(&self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>> {
         // read at least the header
         let header_size = LogLineHeader::size();
         let data = self.read_at_least(*offset, header_size).await?;
@@ -234,7 +230,7 @@ impl LogStorage for VLog {
         Ok(Some((key, value)))
     }
 
-    async fn flush(&mut self) -> Result<()> {
+    async fn flush(&self) -> Result<()> {
         self.0.borrow_mut().writer.flush().await?;
         Ok(())
     }
@@ -243,13 +239,29 @@ impl LogStorage for VLog {
 impl VLog {
     /// Reads at the given offset, at least `min_len`, will read more than that, returning the full result+
     /// from the read amplification through read alignment.
-    async fn read_at_least<'a>(&mut self, offset: u64, min_len: usize) -> Result<ReadResult> {
+    async fn read_at_least<'a>(&self, offset: u64, min_len: usize) -> Result<ReadResult> {
         // align offset appropriately (downwards)
         let aligned_offset = self.0.borrow().reader.align_down(offset);
         let offset_diff = offset - aligned_offset;
         let read_len = offset_diff + min_len as u64;
         // align total read size appropriately (upwards)
         let aligned_read_len = self.0.borrow().reader.align_up(read_len);
+
+        // ensure we read current data
+        // possibly optimize to read from memory, instead of triggering a flush
+        let max_offset = aligned_offset + aligned_read_len;
+        if self.0.borrow().writer.current_flushed_pos() < max_offset {
+            let new_offset = self
+                .0
+                .borrow_mut()
+                .writer
+                .flush_aligned()
+                .await
+                .map_err(|err| eyre::eyre!("{}", err))?;
+            if new_offset < max_offset {
+                self.0.borrow_mut().writer.flush().await?;
+            }
+        }
 
         let buffer = self
             .0
@@ -259,6 +271,13 @@ impl VLog {
             .await
             .map_err(|err| eyre::eyre!("read_at failed: {:?}", err))?;
 
+        if buffer.len() < min_len {
+            eyre::bail!(
+                "failed to read enough: wanted {}, got {}",
+                min_len,
+                buffer.len()
+            );
+        }
         // remove alignment offset at the beginning
         let rest_len = buffer.len() - offset_diff as usize;
         let buffer = ReadResult::slice(&buffer, usize::try_from(offset_diff)?, rest_len)
@@ -315,7 +334,7 @@ mod tests {
             .spawn(|| async move {
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
+                let vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -353,7 +372,7 @@ mod tests {
             .spawn(|| async move {
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
+                let vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -394,7 +413,7 @@ mod tests {
             .spawn(|| async move {
                 let file = tempfile::NamedTempFile::new().unwrap();
 
-                let mut vlog = VLog::create(VLogConfig::new(file.path())).await?;
+                let vlog = VLog::create(VLogConfig::new(file.path())).await?;
 
                 let mut offsets = Vec::new();
                 for i in 0u64..100 {
@@ -406,7 +425,7 @@ mod tests {
 
                 vlog.close().await?;
 
-                let mut vlog = VLog::open(VLogConfig::new(file.path())).await?;
+                let vlog = VLog::open(VLogConfig::new(file.path())).await?;
 
                 for (i, offset) in offsets.iter().enumerate() {
                     println!("reading {i}: at {offset}");
