@@ -13,7 +13,7 @@ impl<V> Default for RecordList<V> {
     }
 }
 
-impl<V> RecordList<V> {
+impl<V: Clone> RecordList<V> {
     pub fn len(&self) -> usize {
         self.records.len()
     }
@@ -46,18 +46,19 @@ impl<V> RecordList<V> {
     }
 
     /// Returns the next and previous record for this key.
+    #[allow(clippy::type_complexity)]
     pub fn find_key_position<K: AsRef<[u8]>>(
         &self,
         key: K,
-    ) -> (Option<(&[u8], &V)>, Option<(&[u8], &V)>) {
+    ) -> (Option<(Vec<u8>, V)>, Option<(Vec<u8>, V)>) {
         let mut prev_record = None;
         let key = key.as_ref();
         for (record_key, record) in &self.records {
             // Location where the key gets inserted is found
             if &record_key[..] > key {
-                return (prev_record, Some((&record_key, record)));
+                return (prev_record, Some((record_key.clone(), record.clone())));
             } else {
-                prev_record = Some((&record_key, record));
+                prev_record = Some((record_key.clone(), record.clone()));
             }
         }
         (prev_record, None)

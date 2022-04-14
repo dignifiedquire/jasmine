@@ -34,6 +34,10 @@ impl<V: Default, const N: u8> Buckets<V, N> {
         Ok(value)
     }
 
+    pub fn has(&self, bucket: usize) -> bool {
+        self.0.contains_key(&bucket)
+    }
+
     fn max_size() -> usize {
         (1 << N) - 1
     }

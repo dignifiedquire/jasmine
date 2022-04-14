@@ -17,14 +17,15 @@ use crate::lsm::LogStorage;
 const VLOG_VERSION: u16 = 0;
 
 #[derive(Debug, Clone)]
-pub struct VLog(Rc<RefCell<Inner>>);
+pub struct VLog(Rc<Inner>);
 
 #[derive(Debug)]
 struct Inner {
     #[allow(dead_code)]
     header: VLogHeader,
-    write_head: u64,
-    writer: DmaStreamWriter,
+    write_head: RefCell<u64>,
+    // TODO: remove RefCell once  https://github.com/DataDog/glommio/issues/544 is fixed
+    writer: RefCell<DmaStreamWriter>,
     reader: DmaFile,
 }
 
@@ -83,12 +84,12 @@ impl LogStorage for VLog {
         writer.write_all(header.as_bytes()).await?;
         let write_head = VLogHeader::size() as u64;
 
-        Ok(VLog(Rc::new(RefCell::new(Inner {
+        Ok(VLog(Rc::new(Inner {
             header,
-            writer,
+            writer: RefCell::new(writer),
             reader,
-            write_head,
-        }))))
+            write_head: RefCell::new(write_head),
+        })))
     }
 
     /// Open an existing `VLog` at the provided `path`.
@@ -122,20 +123,19 @@ impl LogStorage for VLog {
             .map_err(|err| eyre::eyre!("failed top open file: {:?}", err))?;
         let writer = DmaStreamWriterBuilder::new(writer).build();
 
-        Ok(VLog(Rc::new(RefCell::new(Inner {
+        Ok(VLog(Rc::new(Inner {
             header: *header,
             reader,
-            writer,
-            write_head,
-        }))))
+            writer: RefCell::new(writer),
+            write_head: RefCell::new(write_head),
+        })))
     }
 
     /// Waits for all underlying data to be flushed and cleanly closes the underlyling
     /// file descriptors. Must be always called, as there is no `Drop` guard.
     async fn close(mut self) -> Result<()> {
         if let Ok(inner) = Rc::try_unwrap(self.0) {
-            let mut inner = inner.into_inner();
-            inner.writer.close().await?;
+            inner.writer.into_inner().close().await?;
             inner
                 .reader
                 .close()
@@ -155,17 +155,18 @@ impl LogStorage for VLog {
 
         // write header
         self.0
-            .borrow_mut()
             .writer
+            .borrow_mut()
             .write_all(header.as_bytes())
             .await?;
-        // write key & value
-        self.0.borrow_mut().writer.write_all(key).await?;
-        self.0.borrow_mut().writer.write_all(value).await?;
 
-        let old_write_head = self.0.borrow().write_head;
-        self.0.borrow_mut().write_head +=
-            LogLineHeader::size() as u64 + key_size as u64 + value_size as u64;
+        // write key & value
+        self.0.writer.borrow_mut().write_all(key).await?;
+        self.0.writer.borrow_mut().write_all(value).await?;
+
+        let mut write_head = self.0.write_head.borrow_mut();
+        let old_write_head = *write_head;
+        *write_head += LogLineHeader::size() as u64 + key_size as u64 + value_size as u64;
 
         Ok(old_write_head)
     }
@@ -231,7 +232,7 @@ impl LogStorage for VLog {
     }
 
     async fn flush(&self) -> Result<()> {
-        self.0.borrow_mut().writer.flush().await?;
+        self.0.writer.borrow_mut().flush().await?;
         Ok(())
     }
 }
@@ -241,31 +242,30 @@ impl VLog {
     /// from the read amplification through read alignment.
     async fn read_at_least<'a>(&self, offset: u64, min_len: usize) -> Result<ReadResult> {
         // align offset appropriately (downwards)
-        let aligned_offset = self.0.borrow().reader.align_down(offset);
+        let aligned_offset = self.0.reader.align_down(offset);
         let offset_diff = offset - aligned_offset;
         let read_len = offset_diff + min_len as u64;
         // align total read size appropriately (upwards)
-        let aligned_read_len = self.0.borrow().reader.align_up(read_len);
+        let aligned_read_len = self.0.reader.align_up(read_len);
 
         // ensure we read current data
         // possibly optimize to read from memory, instead of triggering a flush
         let max_offset = aligned_offset + aligned_read_len;
-        if self.0.borrow().writer.current_flushed_pos() < max_offset {
+        if self.0.writer.borrow().current_flushed_pos() < max_offset {
             let new_offset = self
                 .0
-                .borrow_mut()
                 .writer
+                .borrow()
                 .flush_aligned()
                 .await
                 .map_err(|err| eyre::eyre!("{}", err))?;
             if new_offset < max_offset {
-                self.0.borrow_mut().writer.flush().await?;
+                self.0.writer.borrow_mut().flush().await?;
             }
         }
 
         let buffer = self
             .0
-            .borrow()
             .reader
             .read_at_aligned(aligned_offset, usize::try_from(aligned_read_len)?)
             .await

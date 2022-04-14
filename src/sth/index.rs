@@ -49,28 +49,33 @@ where
         let leading_bits = (1 << N) - 1;
         let bucket: u32 = prefix & leading_bits;
 
-        // Get the index file offset of the record list the key is in.
-        let mut buckets = self.buckets.borrow_mut();
-        let records = buckets.get_mut(bucket as usize)?;
-
         // The key doesn't need the prefix that was used to find the right bucket. For simplicty
         // only full bytes are trimmed off.
         let index_key = strip_bucket_prefix(key, N);
 
         // No records stored in that bucket yet
-        if records.is_empty() {
+        if !self.buckets.borrow().has(bucket as usize) {
             // As it's the first key a single byte is enough as it doesn't need to be distinguised
             // from other keys.
             let trimmed_index_key = &index_key[..1];
-            records.insert(trimmed_index_key.to_vec(), value);
+
+            self.buckets
+                .borrow_mut()
+                .get_mut(bucket as usize)?
+                .insert(trimmed_index_key.to_vec(), value);
         } else {
-            let (prev_record, next_record) = records.find_key_position(index_key);
+            let (prev_record, next_record) = self
+                .buckets
+                .borrow()
+                .get(bucket as usize)?
+                .expect("checked")
+                .find_key_position(index_key);
 
             match prev_record {
                 // The previous key is fully contained in the current key. We need to read the full
                 // key from the main data file in order to retrieve a key that is distinguishable
                 // from the one that should get inserted.
-                Some((prev_key_short, prev_record)) if index_key.starts_with(prev_key_short) => {
+                Some((prev_key_short, prev_record)) if index_key.starts_with(&prev_key_short) => {
                     let full_prev_key = self
                         .values
                         .get_key(&prev_record)
@@ -92,6 +97,10 @@ where
 
                     let prev_key_short = prev_key_short.to_vec();
 
+                    // Get the index file offset of the record list the key is in.
+                    let mut buckets = self.buckets.borrow_mut();
+                    let records = buckets.get_mut(bucket as usize)?;
+
                     // remove previous key
                     let (_, prev_value) = records.take(prev_key_short).expect("already checked");
                     // insert
@@ -104,7 +113,7 @@ where
                 // (in case there is one).
                 _ => {
                     let prev_record_non_common_byte_pos = match prev_record {
-                        Some((record_key, _)) => first_non_common_byte(index_key, record_key),
+                        Some((record_key, _)) => first_non_common_byte(index_key, &record_key),
                         None => 0,
                     };
 
@@ -128,6 +137,10 @@ where
                     let key_trim_pos = cmp::min(min_prefix, index_key.len());
 
                     let trimmed_index_key = &index_key[0..=key_trim_pos];
+
+                    // Get the index file offset of the record list the key is in.
+                    let mut buckets = self.buckets.borrow_mut();
+                    let records = buckets.get_mut(bucket as usize)?;
                     records.insert(trimmed_index_key.to_vec(), value);
                 }
             }
@@ -152,7 +165,7 @@ where
         let records = buckets.get(bucket as usize)?;
         // The key doesn't need the prefix that was used to find the right bucket. For simplicty
         // only full bytes are trimmed off.
-        let index_key = strip_bucket_prefix(&key, N);
+        let index_key = strip_bucket_prefix(key, N);
 
         Ok(records.and_then(|r| r.get(index_key)).cloned())
     }
