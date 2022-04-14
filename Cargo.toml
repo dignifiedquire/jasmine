@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "sth"
 harness = false
+
+[[bench]]
+name = "memlog"
+harness = false
