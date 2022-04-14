@@ -1,13 +1,13 @@
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use eyre::{ensure, Result};
 
 #[derive(Debug)]
-pub struct Buckets<V, const N: u8>(HashMap<usize, V>);
+pub struct Buckets<V, const N: u8>(AHashMap<usize, V>);
 
 impl<V, const N: u8> Default for Buckets<V, N> {
     fn default() -> Self {
-        Self(HashMap::new())
+        Self(AHashMap::with_capacity(N as usize))
     }
 }
 
