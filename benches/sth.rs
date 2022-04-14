@@ -5,8 +5,8 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use criterion::async_executor::AsyncExecutor;
 use glommio::LocalExecutor;
 use jasmine::lsm::{KeyValueStorage, LogStorage};
+use jasmine::memlog::{MemLog, MemLogConfig};
 use jasmine::sth::{Config, StoreTheHash};
-use jasmine::vlog::{VLog, VLogConfig};
 
 #[derive(Debug, Default)]
 struct GlommioExecutor {
@@ -29,7 +29,6 @@ pub fn put_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sth_put");
     for value_size in [64, 128, 1024, 2048].iter() {
         let value = vec![8u8; *value_size];
-
         let key_size = 32;
 
         group.throughput(criterion::Throughput::Bytes((key_size + value_size) as u64));
@@ -37,25 +36,16 @@ pub fn put_benchmark(c: &mut Criterion) {
             BenchmarkId::new("value_size", *value_size as u64),
             &value,
             |b, value| {
-                let file = tempfile::NamedTempFile::new().unwrap();
                 let executor = GlommioExecutor::default();
-                let (vlog, sth) = executor.run(async {
-                    let vlog = VLog::create(VLogConfig::new(file.path())).await.unwrap();
-                    let sth = StoreTheHash::<_, _, 24>::create(Config::new(vlog.clone()))
+                let (memlog, sth) = executor.run(async {
+                    let memlog = MemLog::create(MemLogConfig::new()).await.unwrap();
+                    let sth = StoreTheHash::<_, _, 24>::create(Config::new(memlog.clone()))
                         .await
                         .unwrap();
-                    (vlog, sth)
+                    (memlog, sth)
                 });
-                // const NUM_ENTRIES: u64 = 5;
-                // for i in 0..NUM_ENTRIES {
-                //     let key = i.to_le_bytes();
-                //     let offset = vlog
-                //         .put(&key, format!("hello world: {i}").as_bytes())
-                //         .await?;
-                //     sth.put(key, offset).await?;
-                // }
 
-                let vlog_ref = &vlog;
+                let memlog_ref = &memlog;
                 let sth_ref = &sth;
                 b.to_async(&executor).iter_custom(|iters| async move {
                     let keys = (0..iters)
@@ -63,7 +53,7 @@ pub fn put_benchmark(c: &mut Criterion) {
                         .collect::<Vec<_>>();
                     let start = Instant::now();
                     for key in &keys {
-                        let offset = vlog_ref
+                        let offset = memlog_ref
                             .put(key.as_bytes(), black_box(value))
                             .await
                             .unwrap();
@@ -74,7 +64,7 @@ pub fn put_benchmark(c: &mut Criterion) {
 
                 executor.run(async move {
                     sth.close().await.unwrap();
-                    vlog.close().await.unwrap();
+                    memlog.close().await.unwrap();
                 });
             },
         );
@@ -82,5 +72,56 @@ pub fn put_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, put_benchmark);
+pub fn get_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sth_get");
+    for value_size in [64, 128, 1024, 2048].iter() {
+        let key_size = 32;
+
+        group.throughput(criterion::Throughput::Bytes(
+            (key_size + *value_size) as u64,
+        ));
+        group.bench_function(BenchmarkId::new("value_size", *value_size as u64), |b| {
+            let executor = GlommioExecutor::default();
+            let (memlog, sth) = executor.run(async {
+                let memlog = MemLog::create(MemLogConfig::new()).await.unwrap();
+                let sth = StoreTheHash::<_, _, 24>::create(Config::new(memlog.clone()))
+                    .await
+                    .unwrap();
+                (memlog, sth)
+            });
+
+            let memlog_ref = &memlog;
+            let keys = executor.run(async {
+                let mut keys = Vec::new();
+                for i in 0..1000 {
+                    let value = vec![((8 * i) % 255) as u8; *value_size];
+                    let key = blake3::hash(&value);
+                    let offset = memlog_ref.put(key.as_bytes(), &value).await.unwrap();
+                    sth.put(key.as_bytes(), offset).await.unwrap();
+                    keys.push(key);
+                }
+                memlog.flush().await.unwrap();
+                keys
+            });
+
+            let sth_ref = &sth;
+            let keys_ref = &keys;
+            b.to_async(&executor).iter_custom(|iters| async move {
+                let l = keys_ref.len();
+
+                let start = Instant::now();
+                for i in 0..iters {
+                    let key = keys_ref[(i as usize) % l];
+                    let res = sth_ref.get(key.as_bytes()).await.unwrap().unwrap();
+                    black_box(res);
+                }
+                start.elapsed()
+            });
+            executor.run(async move { memlog.close().await.unwrap() });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, put_benchmark, get_benchmark);
 criterion_main!(benches);
