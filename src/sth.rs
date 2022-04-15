@@ -57,8 +57,10 @@ where
         })
     }
 
-    async fn close(&self) -> Result<()> {
-        self.index.close().await?;
+    async fn close(self) -> Result<()> {
+        if let Ok(index) = Rc::try_unwrap(self.index) {
+            index.close().await?;
+        }
         Ok(())
     }
 
@@ -121,6 +123,7 @@ mod tests {
                 }
 
                 sth.close().await?;
+                vlog.close().await?;
 
                 Ok::<_, eyre::Error>(())
             })

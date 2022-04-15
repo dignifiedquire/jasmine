@@ -27,7 +27,6 @@ struct Inner {
     // TODO: remove RefCell once  https://github.com/DataDog/glommio/issues/544 is fixed
     writer: RefCell<DmaStreamWriter>,
     reader: DmaFile,
-    closed: RefCell<bool>,
 }
 
 #[derive(Debug, Copy, Clone, FromBytes, AsBytes, Unaligned)]
@@ -90,7 +89,6 @@ impl LogStorage for VLog {
             writer: RefCell::new(writer),
             reader,
             write_head: RefCell::new(write_head),
-            closed: RefCell::new(false),
         })))
     }
 
@@ -130,20 +128,20 @@ impl LogStorage for VLog {
             reader,
             writer: RefCell::new(writer),
             write_head: RefCell::new(write_head),
-            closed: RefCell::new(false),
         })))
     }
 
     /// Waits for all underlying data to be flushed and cleanly closes the underlyling
     /// file descriptors. Must be always called, as there is no `Drop` guard.
-    async fn close(&self) -> Result<()> {
-        let mut closed = self.0.closed.borrow_mut();
-        ensure!(!*closed, "already closed");
-
-        self.0.writer.borrow_mut().close().await?;
-        // TODO: figure out how to close the reader
-
-        *closed = true;
+    async fn close(self) -> Result<()> {
+        if let Ok(inner) = Rc::try_unwrap(self.0) {
+            inner.writer.borrow_mut().close().await?;
+            inner
+                .reader
+                .close()
+                .await
+                .map_err(|e| eyre::eyre!("failed to close reader: {:?}", e))?;
+        }
         Ok(())
     }
 

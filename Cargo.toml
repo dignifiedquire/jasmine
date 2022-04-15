@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "memlog"
 harness = false
+
+[[bench]]
+name = "jasmine"
+harness = false

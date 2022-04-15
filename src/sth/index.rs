@@ -170,7 +170,7 @@ where
         Ok(records.and_then(|r| r.get(index_key)).cloned())
     }
 
-    pub async fn close(&self) -> Result<()> {
+    pub async fn close(self) -> Result<()> {
         self.values.close().await?;
 
         Ok(())

@@ -61,7 +61,7 @@ impl LogStorage for MemLog {
         }))))
     }
 
-    async fn close(&self) -> Result<()> {
+    async fn close(self) -> Result<()> {
         Ok(())
     }
 

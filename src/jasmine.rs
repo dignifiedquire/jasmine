@@ -11,7 +11,7 @@ use glommio::{
     io::{Directory, ReadResult},
     spawn_local, CpuSet, ExecutorJoinHandle, LocalExecutorBuilder,
 };
-use tracing::{debug, warn};
+use tracing::{trace, warn};
 
 use crate::{
     channel::{self, ConnectedBiChannel},
@@ -58,14 +58,14 @@ impl JasmineShard {
     }
 
     async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
-        debug!("put: {:?}", key.as_ref());
+        trace!("put: {}", key.as_ref().len());
         let offset = self.vlog.put(key.as_ref(), value).await?;
         self.index.put(key, offset).await?;
         Ok(())
     }
 
     async fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Slice>> {
-        debug!("get {:?}", key.as_ref());
+        trace!("get {}", key.as_ref().len());
         if let Some(offset) = self.index.get(key.as_ref()).await? {
             if let Some((stored_key, value)) = self.vlog.get(&offset).await? {
                 ensure!(&*stored_key == key.as_ref(), "key missmatch");
@@ -78,52 +78,71 @@ impl JasmineShard {
         Ok(None)
     }
 
-    async fn close(&self) -> Result<()> {
-        self.index.close().await?; // closes the vlog as well
+    async fn flush(&self) -> Result<()> {
+        // self.index.flush().await?;
+        self.vlog.flush().await?;
         Ok(())
     }
 
-    async fn run(&self) {
+    async fn run(self) {
         let cur_shard = self.id;
-        while let Some(req) = self.rpc_channel.recv().await {
-            debug!("handling {:?} at {}", req, cur_shard);
-            let id = req.id;
-            match req.value {
-                RequestValue::Put { key, value } => {
-                    let res = self.put(key, value).await;
-                    self.rpc_channel
-                        .send(Response {
-                            id,
-                            value: ResponseValue::Put(res),
-                        })
-                        .await
-                        .unwrap();
-                }
-                RequestValue::Get { key } => {
-                    let res = self.get(key).await;
-                    self.rpc_channel
-                        .send(Response {
-                            id,
-                            value: ResponseValue::Get(res.map(|v| v.map(|v| v.to_vec()))),
-                        })
-                        .await
-                        .unwrap();
-                }
-                RequestValue::Close => {
-                    self.close().await.unwrap();
-                    self.rpc_channel
-                        .send(Response {
-                            id,
-                            value: ResponseValue::Close,
-                        })
-                        .await
-                        .unwrap();
+        let id = loop {
+            if let Some(req) = self.rpc_channel.recv().await {
+                trace!("handling request {} at {}", req.id, cur_shard);
+                let id = req.id;
+                match req.value {
+                    RequestValue::Put { key, value } => {
+                        let res = self.put(key, value).await;
+                        self.rpc_channel
+                            .send(Response {
+                                id,
+                                value: ResponseValue::Put(res),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    RequestValue::Get { key } => {
+                        let res = self.get(key).await;
+                        self.rpc_channel
+                            .send(Response {
+                                id,
+                                value: ResponseValue::Get(res.map(|v| v.map(|v| v.to_vec()))),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    RequestValue::Flush => {
+                        let res = self.flush().await;
+                        self.rpc_channel
+                            .send(Response {
+                                id,
+                                value: ResponseValue::Flush(res),
+                            })
+                            .await
+                            .unwrap();
+                    }
 
-                    // shutting down, so break
-                    break;
+                    RequestValue::Close => {
+                        // shutting down, so break
+                        break id;
+                    }
                 }
+            } else {
+                panic!("sad panda");
             }
-        }
+        };
+
+        let ret1 = self.index.close().await;
+        let ret2 = self.vlog.close().await;
+        let ret = ret1.and_then(|_| ret2);
+
+        self.rpc_channel
+            .send(Response {
+                id,
+                value: ResponseValue::Close(ret),
+            })
+            .await
+            .unwrap();
     }
 }
 
@@ -178,7 +197,7 @@ impl Jasmine {
                     let shard = JasmineShard::create(id as u64, path, rpc_receiver)
                         .await
                         .unwrap();
-                    debug!("created shard {}", id);
+                    trace!("created shard {}", id);
                     shard.run().await;
                 })
                 .map_err(|err| eyre::eyre!("failed to spawn: {:?}", err))?;
@@ -188,7 +207,7 @@ impl Jasmine {
             rpc_channel_senders.push(sender);
             rpc_channel_receivers.push(recv);
         }
-        debug!("setup done");
+        trace!("setup done");
 
         let outstanding_requests = Rc::new(RefCell::new(AHashMap::new()));
         let or = outstanding_requests.clone();
@@ -232,6 +251,14 @@ impl Jasmine {
         ensure!(shard_id < self.rpc_channels.len() as u64, "invalid id");
         let req_id = *self.next_req_id.borrow();
         *self.next_req_id.borrow_mut() += 1;
+
+        let (sender, receiver) = local_channel::new_bounded(1);
+        self.outstanding_requests
+            .borrow_mut()
+            .insert(req_id, sender);
+
+        // TODO: remove if the we have an error
+
         self.rpc_channels[shard_id as usize]
             .send(Request {
                 id: req_id,
@@ -239,11 +266,6 @@ impl Jasmine {
             })
             .await
             .map_err(|err| eyre::eyre!("failed to send to {}: {:?}", shard_id, err))?;
-
-        let (sender, receiver) = local_channel::new_bounded(1);
-        self.outstanding_requests
-            .borrow_mut()
-            .insert(req_id, sender);
 
         let result = receiver
             .recv()
@@ -262,7 +284,7 @@ impl Jasmine {
     pub async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<()> {
         let shard_id = self.find_shard(key.as_ref());
 
-        debug!("sending to {}", shard_id,);
+        trace!("send_to {}", shard_id);
         let response = self
             .send_to(
                 shard_id,
@@ -273,6 +295,7 @@ impl Jasmine {
             )
             .await?;
 
+        trace!("response_from {}", shard_id);
         if let ResponseValue::Put(res) = response {
             res
         } else {
@@ -299,14 +322,32 @@ impl Jasmine {
         }
     }
 
+    pub async fn flush(&self) -> Result<()> {
+        let mut list = Vec::with_capacity(self.buckets.len());
+
+        for bucket in &self.buckets {
+            list.push(self.send_to(bucket.id, RequestValue::Flush));
+        }
+        futures::future::join_all(list)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        Ok(())
+    }
+
     pub async fn close(self) -> Result<()> {
         for bucket in &self.buckets {
-            debug!("closing {}", bucket.id);
-            self.send_to(bucket.id, RequestValue::Close).await?;
+            trace!("closing {}", bucket.id);
+            let response = self.send_to(bucket.id, RequestValue::Close).await?;
+            if let ResponseValue::Close(res) = response {
+                res?;
+            } else {
+                bail!("invalid response: {:?}", response);
+            }
         }
 
         for ex in self.executors.into_iter() {
-            debug!("shutting down executor {:?}", ex.thread().id());
+            trace!("shutting down executor {:?}", ex.thread().id());
             ex.join().map_err(|e| eyre::eyre!("{:?}", e))?;
         }
 
@@ -333,6 +374,7 @@ enum RequestValue {
     // TODO: avoid allocation
     Put { key: Vec<u8>, value: Vec<u8> },
     Get { key: Vec<u8> },
+    Flush,
     Close,
 }
 
@@ -346,22 +388,23 @@ struct Response {
 enum ResponseValue {
     Put(Result<()>),
     Get(Result<Option<Vec<u8>>>),
-    Close,
+    Flush(Result<()>),
+    Close(Result<()>),
 }
 
 #[cfg(test)]
 mod tests {
+    use tracing::info;
+
     use super::*;
 
     #[test]
     fn test_basics() {
-        // tracing_subscriber::fmt()
-        //     .pretty()
-        //     .with_thread_names(true)
-        //     // enable everything
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     // sets this to be the default, global collector for this application.
-        //     .init();
+        tracing_subscriber::fmt()
+            .pretty()
+            .with_thread_names(true)
+            .with_max_level(tracing::Level::TRACE)
+            .init();
 
         use glommio::LocalExecutorBuilder;
         LocalExecutorBuilder::default()
@@ -372,19 +415,24 @@ mod tests {
 
                 const NUM_ENTRIES: u64 = 100;
                 for i in 0..NUM_ENTRIES {
+                    info!("hash entry {}", i);
                     let value = vec![i as u8; 32];
                     let key = blake3::hash(&value);
+                    info!("put entry {}", i);
                     jasmine.put(key.as_bytes(), &value).await?;
+                    info!("get entry {}", i);
                     let res = jasmine.get(key.as_bytes()).await?.unwrap();
                     assert_eq!(res, value);
                 }
 
-                for i in 0..NUM_ENTRIES {
-                    let value = vec![i as u8; 32];
-                    let key = blake3::hash(&value);
-                    let res = jasmine.get(key.as_bytes()).await?.unwrap();
-                    assert_eq!(res, value);
-                }
+                jasmine.flush().await?;
+
+                // for i in 0..NUM_ENTRIES {
+                //     let value = vec![i as u8; 32];
+                //     let key = blake3::hash(&value);
+                //     let res = jasmine.get(key.as_bytes()).await?.unwrap();
+                //     assert_eq!(res, value);
+                // }
 
                 jasmine.close().await?;
 
