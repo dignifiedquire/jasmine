@@ -1,6 +1,6 @@
 //! Key storage based on StoreTheHash.
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, rc::Rc};
 
 use async_trait::async_trait;
 use eyre::Result;
@@ -12,12 +12,12 @@ mod recordlist;
 use self::index::Index;
 use crate::lsm::{KeyValueStorage, LogStorage};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StoreTheHash<V, L, const N: u8>
 where
     L: LogStorage<Offset = V>,
 {
-    index: Index<V, L, N>,
+    index: Rc<Index<V, L, N>>,
     _v: PhantomData<V>,
 }
 
@@ -45,19 +45,19 @@ where
 
     async fn create(config: Self::Config) -> Result<Self> {
         Ok(Self {
-            index: Index::new(config.values)?,
+            index: Rc::new(Index::new(config.values)?),
             _v: PhantomData::default(),
         })
     }
 
     async fn open(config: Self::Config) -> Result<Self> {
         Ok(Self {
-            index: Index::new(config.values)?,
+            index: Rc::new(Index::new(config.values)?),
             _v: PhantomData::default(),
         })
     }
 
-    async fn close(self) -> Result<()> {
+    async fn close(&self) -> Result<()> {
         self.index.close().await?;
         Ok(())
     }
@@ -121,7 +121,6 @@ mod tests {
                 }
 
                 sth.close().await?;
-                vlog.close().await?;
 
                 Ok::<_, eyre::Error>(())
             })

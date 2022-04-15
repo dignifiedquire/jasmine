@@ -17,7 +17,7 @@ pub trait KeyValueStorage: Sized {
 
     async fn create(config: Self::Config) -> Result<Self>;
     async fn open(config: Self::Config) -> Result<Self>;
-    async fn close(self) -> Result<()>;
+    async fn close(&self) -> Result<()>;
 
     async fn put<K: AsRef<[u8]>>(&self, key: K, data: Self::Value) -> Result<()>;
     async fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Self::Value>>;
@@ -34,7 +34,7 @@ pub trait LogStorage: Sized {
 
     async fn create(config: Self::Config) -> Result<Self>;
     async fn open(config: Self::Config) -> Result<Self>;
-    async fn close(self) -> Result<()>;
+    async fn close(&self) -> Result<()>;
 
     async fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, data: V) -> Result<Self::Offset>;
     async fn get(&self, offset: &Self::Offset) -> Result<Option<(Self::Key, Self::Value)>>;

@@ -64,7 +64,6 @@ pub fn put_benchmark(c: &mut Criterion) {
 
                 executor.run(async move {
                     sth.close().await.unwrap();
-                    memlog.close().await.unwrap();
                 });
             },
         );
